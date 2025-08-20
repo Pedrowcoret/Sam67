@@ -141,7 +141,7 @@ const getVideoInfo = async (filePath) => {
 
 // Função para verificar se codec é compatível
 const isCompatibleCodec = (codecName) => {
-  const compatibleCodecs = ['h264', 'h265', 'hevc'];
+  const compatibleCodecs = ['h264', 'h265', 'hevc', 'avc1'];
   return compatibleCodecs.includes(codecName?.toLowerCase());
 };
 
@@ -197,65 +197,6 @@ router.get('/', authMiddleware, async (req, res) => {
     console.log(`📁 Buscando vídeos na pasta: ${folderName} (ID: ${folderId})`);
     console.log(`📊 Encontrados ${rows.length} vídeos no banco`);
 
-    // Sincronizar com servidor e atualizar informações
-    const VideoSSHManager = require('../config/VideoSSHManager');
-    const SSHManager = require('../config/SSHManager');
-    
-    let totalSizeUpdated = 0;
-    
-    for (const video of rows) {
-      try {
-        // Construir caminho correto no servidor
-        let serverPath = video.caminho;
-        if (!serverPath.startsWith('/home/streaming/')) {
-          serverPath = `/home/streaming/${userLogin}/${folderName}/${video.nome}`;
-        }
-        
-        // Verificar se arquivo existe e obter informações atualizadas
-        const fileInfo = await SSHManager.getFileInfo(serverId, serverPath);
-        
-        if (fileInfo.exists) {
-          // Atualizar informações se necessário
-          let needsUpdate = false;
-          const updates = [];
-          const values = [];
-          
-          if (!video.tamanho_arquivo && fileInfo.size > 0) {
-            updates.push('tamanho_arquivo = ?');
-            values.push(fileInfo.size);
-            video.tamanho = fileInfo.size;
-            needsUpdate = true;
-          }
-          
-          if (video.caminho !== serverPath) {
-            updates.push('caminho = ?');
-            values.push(serverPath);
-            needsUpdate = true;
-          }
-          
-          if (needsUpdate) {
-            values.push(video.id);
-            await db.execute(
-              `UPDATE videos SET ${updates.join(', ')} WHERE id = ?`,
-              values
-            );
-          }
-          
-          totalSizeUpdated += Math.ceil((video.tamanho || 0) / (1024 * 1024));
-        }
-      } catch (error) {
-        console.warn(`Erro ao verificar vídeo ${video.nome}:`, error.message);
-      }
-    }
-    
-    // Atualizar espaço usado da pasta se houve mudanças
-    if (totalSizeUpdated > 0 && Math.abs(totalSizeUpdated - (folderData.espaco_usado || 0)) > 5) {
-      await db.execute(
-        'UPDATE streamings SET espaco_usado = ? WHERE codigo = ?',
-        [totalSizeUpdated, folderId]
-      );
-      console.log(`📊 Espaço da pasta atualizado: ${totalSizeUpdated}MB`);
-    }
 
     const videos = rows.map(video => {
       // Construir URL correta baseada no caminho
@@ -291,32 +232,34 @@ router.get('/', authMiddleware, async (req, res) => {
       // Buscar limite de bitrate do usuário
       const userBitrateLimit = req.user.bitrate || 2500;
 
-      // Verificar se bitrate excede o limite
+      // Verificar compatibilidade completa
       const currentBitrate = video.bitrate_video || 0;
       const bitrateExceedsLimit = currentBitrate > userBitrateLimit;
       
-      // Verificar compatibilidade de formato e codec
       const fileExtension = path.extname(video.nome).toLowerCase();
       const isMP4 = video.is_mp4 === 1;
-      const codecCompatible = isCompatibleCodec(video.codec_video) || video.codec_video === 'h264';
-      const formatCompatible = isCompatibleFormat(video.formato_original, fileExtension) || fileExtension === '.mp4';
+      const codecCompatible = isCompatibleCodec(video.codec_video) || 
+                              video.codec_video === 'h264' || 
+                              video.codec_video === 'h265' || 
+                              video.codec_video === 'hevc';
       
-      // Determinar se precisa de conversão - considerar campo compativel do banco
-      const needsConversion = video.compativel !== 'sim' && (!isMP4 || !codecCompatible || !formatCompatible);
+      // Lógica de compatibilidade atualizada
+      const isFullyCompatible = isMP4 && codecCompatible && !bitrateExceedsLimit;
+      const needsConversion = !isMP4 || !codecCompatible || bitrateExceedsLimit;
       
       // Status de compatibilidade
       let compatibilityStatus = 'compatible';
       let compatibilityMessage = 'Compatível';
       
-      if (video.compativel === 'sim') {
-        compatibilityStatus = 'compatible';
-        compatibilityMessage = 'Compatível';
-      } else if (needsConversion) {
+      if (video.compativel === 'otimizado' && isFullyCompatible) {
+        compatibilityStatus = 'optimized';
+        compatibilityMessage = 'Otimizado';
+      } else if (needsConversion || !isFullyCompatible) {
         compatibilityStatus = 'needs_conversion';
         compatibilityMessage = 'Necessário Conversão';
-      } else if (bitrateExceedsLimit) {
-        compatibilityStatus = 'bitrate_high';
-        compatibilityMessage = 'Bitrate Alto';
+      } else {
+        compatibilityStatus = 'needs_conversion';
+        compatibilityMessage = 'Necessário Conversão';
       }
       
       return {
@@ -336,11 +279,11 @@ router.get('/', authMiddleware, async (req, res) => {
         user: userLogin,
         user_bitrate_limit: userBitrateLimit,
         bitrate_exceeds_limit: bitrateExceedsLimit,
-        needs_conversion: needsConversion,
+        needs_conversion: needsConversion || !isFullyCompatible,
         compatibility_status: compatibilityStatus,
         compatibility_message: compatibilityMessage,
         codec_compatible: codecCompatible,
-        format_compatible: formatCompatible,
+        format_compatible: isMP4,
         has_converted_version: video.has_converted_version === 1
       };
     });
@@ -477,13 +420,19 @@ router.post('/upload', authMiddleware, upload.single('video'), async (req, res) 
       });
       await SSHManager.createUserFolder(serverId, userLogin, folderName);
 
-      // Estrutura correta: /home/streaming/[usuario]/[pasta]/arquivo
-      const remotePath = `/home/streaming/${userLogin}/${folderName}/${req.file.filename}`;
-      await SSHManager.uploadFile(serverId, req.file.path, remotePath);
+      // Estrutura correta para Wowza: /usr/local/WowzaStreamingEngine/content/[usuario]/[pasta]/arquivo
+      const wowzaPath = `/usr/local/WowzaStreamingEngine/content/${userLogin}/${folderName}/${req.file.filename}`;
+      // Também salvar na estrutura de streaming para backup
+      const streamingPath = `/home/streaming/${userLogin}/${folderName}/${req.file.filename}`;
+      
+      // Upload para ambos os locais
+      await SSHManager.uploadFile(serverId, req.file.path, wowzaPath);
+      await SSHManager.uploadFile(serverId, req.file.path, streamingPath);
       await fs.unlink(req.file.path);
 
-      console.log(`✅ Arquivo enviado para: ${remotePath}`);
-      console.log(`📂 Estrutura: /home/streaming/${userLogin}/${folderName}/${req.file.filename}`);
+      console.log(`✅ Arquivo enviado para Wowza: ${wowzaPath}`);
+      console.log(`✅ Arquivo enviado para streaming: ${streamingPath}`);
+      console.log(`📂 Estrutura Wowza: /usr/local/WowzaStreamingEngine/content/${userLogin}/${folderName}/${req.file.filename}`);
 
       // Construir caminho relativo para salvar no banco
       const relativePath = `${userLogin}/${folderName}/${req.file.filename}`;
@@ -497,12 +446,22 @@ router.post('/upload', authMiddleware, upload.single('video'), async (req, res) 
 
       // Verificar compatibilidade
       const isMP4 = fileExtension === '.mp4';
-      const codecCompatible = isCompatibleCodec(codecVideo);
-      const formatCompatible = isCompatibleFormat(formatoOriginal, fileExtension);
-      const needsConversion = !isMP4 || !codecCompatible || !formatCompatible;
+      const codecCompatible = isCompatibleCodec(codecVideo) || codecVideo === 'h264' || codecVideo === 'h265' || codecVideo === 'hevc';
+      const bitrateWithinLimit = bitrateVideo <= (req.user.bitrate || 2500);
+      
+      // Lógica de compatibilidade atualizada
+      const isFullyCompatible = isMP4 && codecCompatible && bitrateWithinLimit;
+      const needsConversion = !isMP4 || !codecCompatible || !bitrateWithinLimit;
       
       // Status de compatibilidade
-      let compatibilityStatus = (isMP4 && codecCompatible && formatCompatible) ? 'sim' : 'nao';
+      let compatibilityStatus;
+      if (isFullyCompatible) {
+        compatibilityStatus = 'otimizado';
+      } else if (needsConversion) {
+        compatibilityStatus = 'nao';
+      } else {
+        compatibilityStatus = 'nao';
+      }
 
       // Salvar na tabela videos SEM conversão automática
       const [result] = await db.execute(
@@ -514,7 +473,7 @@ router.post('/upload', authMiddleware, upload.single('video'), async (req, res) 
         [
           videoTitle,
           relativePath,
-          remotePath,
+          wowzaPath, // Usar caminho do Wowza como principal
           duracao,
           tamanho,
           userId,
@@ -547,15 +506,18 @@ router.post('/upload', authMiddleware, upload.single('video'), async (req, res) 
       }
 
       // Determinar status de compatibilidade para resposta
-      let statusMessage = 'Vídeo compatível';
-      let statusColor = 'green';
+      let statusMessage;
+      let statusColor;
       
-      if (needsConversion) {
+      if (isFullyCompatible) {
+        statusMessage = 'Otimizado';
+        statusColor = 'green';
+      } else if (needsConversion) {
         statusMessage = 'Necessário Conversão';
         statusColor = 'red';
-      } else if (bitrateVideo > userBitrateLimit) {
-        statusMessage = 'Bitrate Alto';
-        statusColor = 'yellow';
+      } else {
+        statusMessage = 'Necessário Conversão';
+        statusColor = 'red';
       }
 
       res.status(201).json({
@@ -563,8 +525,8 @@ router.post('/upload', authMiddleware, upload.single('video'), async (req, res) 
         nome: videoTitle,
         url: relativePath,
         view_url: viewUrl,
-        path: remotePath,
-        originalFile: remotePath,
+        path: wowzaPath,
+        originalFile: wowzaPath,
         bitrate_video: bitrateVideo,
         codec_video: codecVideo,
         formato_original: fileExtension.substring(1),
@@ -758,11 +720,11 @@ router.get('/content/*', authMiddleware, async (req, res) => {
     
     // Configurar URL do Wowza dinâmico
     const fetch = require('node-fetch');
-    
-    let wowzaUrl;
+        // Para streams HLS - usar caminho correto do Wowza
+        wowzaUrl = `http://${wowzaHost}:1935/vod/_definst_/mp4:${userLogin}/${folderName}/${finalFileName}/playlist.m3u8`;
     if (isStreamFile) {
-      // Para streams HLS - verificar se arquivo MP4 existe, senão usar original
-      wowzaUrl = `http://${wowzaHost}:1935/vod/_definst_/mp4:${userLogin}/${folderName}/${finalFileName}/playlist.m3u8`;
+        // Para arquivos diretos - usar caminho correto do Wowza
+        wowzaUrl = `http://${wowzaUser}:${wowzaPassword}@${wowzaHost}:${wowzaPort}/content/${userLogin}/${folderName}/${finalFileName}`;
     } else {
       // Para arquivos diretos - tentar MP4 primeiro
       wowzaUrl = `http://${wowzaUser}:${wowzaPassword}@${wowzaHost}:${wowzaPort}/content/${userLogin}/${folderName}/${finalFileName}`;
@@ -877,9 +839,24 @@ router.delete('/:id', authMiddleware, async (req, res) => {
     const serverId = serverRows.length > 0 ? serverRows[0].codigo_servidor : 1;
 
     let fileSize = tamanho_arquivo || 0;
-    // Estrutura correta: verificar se já está no formato correto
-    const remotePath = caminho.startsWith('/home/streaming') ? 
-      caminho : `/home/streaming/${caminho}`;
+    
+    // Determinar caminho correto (priorizar Wowza)
+    let remotePath = caminho;
+    if (!caminho.startsWith('/usr/local/WowzaStreamingEngine/content/') && 
+        !caminho.startsWith('/home/streaming/')) {
+      // Construir caminho do Wowza
+      remotePath = `/usr/local/WowzaStreamingEngine/content/${caminho}`;
+    }
+    // Verificar se é caminho do Wowza ou streaming
+    if (caminho.startsWith('/usr/local/WowzaStreamingEngine/content/')) {
+      remotePath = caminho; // Usar caminho do Wowza
+    } else if (caminho.startsWith('/home/streaming/')) {
+      // Converter para caminho do Wowza
+      remotePath = caminho.replace('/home/streaming/', '/usr/local/WowzaStreamingEngine/content/');
+    } else {
+      // Construir caminho do Wowza
+      remotePath = `/usr/local/WowzaStreamingEngine/content/${caminho}`;
+    }
 
     // Verificar tamanho real do arquivo via SSH, se necessário
     if (!fileSize) {
@@ -891,9 +868,29 @@ router.delete('/:id', authMiddleware, async (req, res) => {
       }
     }
 
-    // Remover arquivo via SSH
+    // Remover arquivo do Wowza e streaming via SSH
     try {
       await SSHManager.deleteFile(serverId, remotePath);
+      
+      // Também tentar remover da estrutura de streaming se for diferente
+      if (remotePath.startsWith('/usr/local/WowzaStreamingEngine/content/')) {
+        const streamingPath = remotePath.replace('/usr/local/WowzaStreamingEngine/content/', '/home/streaming/');
+        try {
+          await SSHManager.deleteFile(serverId, streamingPath);
+        } catch (streamingError) {
+          console.warn('Arquivo não existe na estrutura de streaming:', streamingError.message);
+        }
+      }
+      
+      
+      // Também tentar remover da estrutura de streaming se existir
+      const streamingPath = remotePath.replace('/usr/local/WowzaStreamingEngine/content/', '/home/streaming/');
+      try {
+        await SSHManager.deleteFile(serverId, streamingPath);
+      } catch (streamingError) {
+        console.warn('Arquivo não existe na estrutura de streaming:', streamingError.message);
+      }
+      
       console.log(`✅ Arquivo remoto removido: ${remotePath}`);
       
       // Atualizar arquivo SMIL do usuário após remoção

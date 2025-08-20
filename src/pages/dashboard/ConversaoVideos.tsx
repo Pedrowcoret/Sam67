@@ -392,9 +392,11 @@ const ConversaoVideos: React.FC = () => {
       return 'Convertendo...';
     }
 
-    // Verificar primeiro o campo compativel do banco
-    if (video.compatibility_status === 'compatible' || video.compatibility_message === 'Compatível') {
-      return 'Compatível';
+    // Verificar status de compatibilidade atualizado
+    if (video.compatibility_status === 'optimized' || video.compatibility_message === 'Otimizado') {
+      return 'Otimizado';
+    } else if (video.compatibility_status === 'needs_conversion' || video.compatibility_message === 'Necessário Conversão') {
+      return 'Necessário Conversão';
     }
     
     switch (video.conversion_status) {
@@ -407,10 +409,7 @@ const ConversaoVideos: React.FC = () => {
       case 'disponivel':
         return 'Disponível';
       default:
-        if (video.is_mp4 && video.can_use_current) {
-          return 'MP4 Original';
-        }
-        return video.needs_conversion ? 'Necessário Conversão' : 'Compatível';
+        return video.needs_conversion ? 'Necessário Conversão' : 'Otimizado';
     }
   };
 
@@ -419,9 +418,11 @@ const ConversaoVideos: React.FC = () => {
       return 'text-blue-600';
     }
 
-    // Verificar primeiro o campo compativel do banco
-    if (video.compatibility_status === 'compatible' || video.compatibility_message === 'Compatível') {
+    // Verificar status de compatibilidade atualizado
+    if (video.compatibility_status === 'optimized' || video.compatibility_message === 'Otimizado') {
       return 'text-green-600';
+    } else if (video.compatibility_status === 'needs_conversion' || video.compatibility_message === 'Necessário Conversão') {
+      return 'text-red-600';
     }
     
     switch (video.conversion_status) {
@@ -434,9 +435,6 @@ const ConversaoVideos: React.FC = () => {
       case 'disponivel':
         return 'text-green-600';
       default:
-        if (video.is_mp4 && video.can_use_current) {
-          return 'text-green-600';
-        }
         return video.needs_conversion ? 'text-red-600' : 'text-green-600';
     }
   };
@@ -608,7 +606,7 @@ const ConversaoVideos: React.FC = () => {
                     <td className="py-3 px-4 text-center">
                       <span className={`px-2 py-1 text-xs font-medium rounded-full ${video.is_mp4 && video.compatibility_status !== 'needs_conversion' ?
                         'bg-green-100 text-green-800' :
-                        video.compatibility_status === 'needs_conversion' ?
+                        video.compatibility_status === 'needs_conversion' || !video.can_use_current ?
                           'bg-red-100 text-red-800' :
                           'bg-yellow-100 text-yellow-800'
                         }`}>
@@ -619,12 +617,12 @@ const ConversaoVideos: React.FC = () => {
 
                     <td className="py-3 px-4 text-center">
                       <div className="flex flex-col items-center">
-                        <span className={`font-medium ${(video.bitrate_video || video.current_bitrate) > video.user_bitrate_limit ? 'text-red-600' : 'text-gray-900'
+                        <span className={`font-medium ${(video.bitrate_video || video.current_bitrate) > video.user_bitrate_limit ? 'text-red-600 font-bold' : 'text-gray-900'
                           }`}>
                           {video.bitrate_video || video.current_bitrate || 'N/A'} kbps
                         </span>
                         {(video.bitrate_video || video.current_bitrate) > video.user_bitrate_limit && (
-                          <span className="text-xs text-red-600">
+                          <span className="text-xs text-red-600 font-bold">
                             Limite: {video.user_bitrate_limit} kbps
                           </span>
                         )}
@@ -642,9 +640,14 @@ const ConversaoVideos: React.FC = () => {
                           <span className={`text-sm font-medium ${getStatusColor(video)}`}>
                             {getStatusText(video)}
                           </span>
-                          {video.compatibility_status === 'needs_conversion' && (
-                            <span className="text-xs text-red-600 font-medium">
+                          {(video.compatibility_status === 'needs_conversion' || !video.can_use_current) && (
+                            <span className="text-xs text-red-600 font-bold bg-red-50 px-2 py-1 rounded">
                               Necessário Conversão
+                            </span>
+                          )}
+                          {video.compatibility_status === 'optimized' && video.can_use_current && (
+                            <span className="text-xs text-green-600 font-bold bg-green-50 px-2 py-1 rounded">
+                              Otimizado
                             </span>
                           )}
                         </div>
@@ -663,8 +666,12 @@ const ConversaoVideos: React.FC = () => {
 
                         <button
                           onClick={() => openConversionModal(video)}
-                          disabled={converting[video.id] || video.conversion_status === 'em_andamento'}
-                          className="text-purple-600 hover:text-purple-800 disabled:opacity-50 p-1"
+                          disabled={converting[video.id] || video.conversion_status === 'em_andamento' || video.compatibility_status === 'optimized'}
+                          className={`p-1 disabled:opacity-50 ${
+                            video.compatibility_status === 'optimized' ? 
+                              'text-gray-400 cursor-not-allowed' : 
+                              'text-purple-600 hover:text-purple-800'
+                          }`}
                           title="Converter vídeo"
                         >
                           <Settings className="h-4 w-4" />

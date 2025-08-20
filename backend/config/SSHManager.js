@@ -157,21 +157,29 @@ class SSHManager {
 
     async createUserDirectory(serverId, userLogin) {
         try {
-            // Nova estrutura: /home/streaming/[usuario]
+            // Criar estruturas tanto para streaming quanto para Wowza
             const userDir = `/home/streaming/${userLogin}`;
+            const wowzaDir = `/usr/local/WowzaStreamingEngine/content/${userLogin}`;
+            
             const commands = [
+                // Estrutura de streaming
                 `mkdir -p ${userDir}`,
                 `mkdir -p ${userDir}/recordings`,
                 `chown -R streaming:streaming ${userDir}`,
-                `chmod -R 755 ${userDir}`
+                `chmod -R 755 ${userDir}`,
+                // Estrutura do Wowza
+                `mkdir -p ${wowzaDir}`,
+                `mkdir -p ${wowzaDir}/recordings`,
+                `chown -R root:root ${wowzaDir}`,
+                `chmod -R 755 ${wowzaDir}`
             ];
 
             for (const command of commands) {
                 await this.executeCommand(serverId, command);
             }
 
-            console.log(`✅ Diretório criado para usuário ${userLogin} no servidor ${serverId}`);
-            return { success: true, userDir };
+            console.log(`✅ Estruturas criadas para usuário ${userLogin}: streaming e Wowza`);
+            return { success: true, userDir, wowzaDir };
         } catch (error) {
             console.error(`Erro ao criar diretório para usuário ${userLogin}:`, error);
             throw error;
@@ -180,21 +188,29 @@ class SSHManager {
 
     async createUserFolder(serverId, userLogin, folderName) {
         try {
-            // Estrutura correta: /home/streaming/[usuario]/[pasta]
+            // Criar pastas tanto na estrutura de streaming quanto no Wowza
             const folderPath = `/home/streaming/${userLogin}/${folderName}`;
+            const wowzaFolderPath = `/usr/local/WowzaStreamingEngine/content/${userLogin}/${folderName}`;
+            
             const commands = [
+                // Pasta de streaming
                 `mkdir -p ${folderPath}`,
                 `chown -R streaming:streaming ${folderPath}`,
-                `chmod -R 755 ${folderPath}`
+                `chmod -R 755 ${folderPath}`,
+                // Pasta do Wowza
+                `mkdir -p ${wowzaFolderPath}`,
+                `chown -R root:root ${wowzaFolderPath}`,
+                `chmod -R 755 ${wowzaFolderPath}`
             ];
 
             for (const command of commands) {
                 await this.executeCommand(serverId, command);
             }
 
-            console.log(`✅ Pasta ${folderName} criada para usuário ${userLogin}`);
-            console.log(`📁 Caminho completo: ${folderPath}`);
-            return { success: true, folderPath };
+            console.log(`✅ Pasta ${folderName} criada para usuário ${userLogin} em ambas estruturas`);
+            console.log(`📁 Streaming: ${folderPath}`);
+            console.log(`📁 Wowza: ${wowzaFolderPath}`);
+            return { success: true, folderPath, wowzaFolderPath };
         } catch (error) {
             console.error(`Erro ao criar pasta ${folderName}:`, error);
             throw error;

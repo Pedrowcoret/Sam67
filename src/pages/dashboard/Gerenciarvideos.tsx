@@ -683,7 +683,7 @@ const GerenciarVideos: React.FC = () => {
                             }`}
                           style={{ width: `${progress.progress}%` }}
                         ></div>
-                      </div>
+                        video.compatibility_status === 'needs_conversion' || !video.codec_compatible ?
                       <span className={`text-xs ${progress.status === 'completed' ? 'text-green-600' :
                         progress.status === 'error' ? 'text-red-600' : 'text-blue-600'
                         }`}>
@@ -708,7 +708,7 @@ const GerenciarVideos: React.FC = () => {
               <table className="w-full border-collapse">
                 <thead>
                   <tr className="border-b border-gray-200">
-                    <th className="text-left py-3 px-4 font-medium text-gray-700">Vídeo</th>
+                          <span className="text-xs text-red-600 font-bold bg-red-50 px-1 rounded">
                     <th className="text-center py-3 px-4 font-medium text-gray-700">Formato</th>
                     <th className="text-center py-3 px-4 font-medium text-gray-700">Bitrate</th>
                     <th className="text-center py-3 px-4 font-medium text-gray-700">Tamanho</th>
@@ -725,19 +725,19 @@ const GerenciarVideos: React.FC = () => {
                           <Video className="h-5 w-5 text-gray-400" />
                           <div>
                             <div className="font-medium text-gray-900 truncate max-w-xs" title={video.nome}>
-                              {video.nome}
+                        {video.compatibility_status === 'optimized' || (video.is_mp4 && video.codec_compatible && !video.bitrate_exceeds_limit) ? (
                             </div>
-                            <div className="text-xs text-gray-500">
+                        ) : video.compatibility_status === 'needs_conversion' || video.bitrate_exceeds_limit || !video.codec_compatible ? (
                               ID: {video.id}
                             </div>
-                          </div>
+                          <AlertCircle className="h-4 w-4 text-red-600" />
                         </div>
                       </td>
-
-                      <td className="py-3 px-4 text-center">
-                        <span className={`px-2 py-1 text-xs font-medium rounded-full ${video.is_mp4 ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
+                          video.compatibility_status === 'optimized' || (video.is_mp4 && video.codec_compatible && !video.bitrate_exceeds_limit) ? 'text-green-600' :
+                          'text-red-600'
                           }`}>
-                          {video.formato_original?.toUpperCase() || 'N/A'}
+                          {video.compatibility_status === 'optimized' || (video.is_mp4 && video.codec_compatible && !video.bitrate_exceeds_limit) ? 
+                            'Otimizado' : 'Necessário Conversão'}
                         </span>
                       </td>
 
