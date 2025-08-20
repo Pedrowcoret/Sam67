@@ -1,0 +1,531 @@
+const express = require('express');
+const db = require('../config/database');
+const authMiddleware = require('../middlewares/authMiddleware');
+const SSHManager = require('../config/SSHManager');
+const VideoURLBuilder = require('../config/VideoURLBuilder');
+
+const router = express.Router();
+
+// GET /api/folders - Lista pastas do usuário
+router.get('/', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // Buscar pastas do usuário na tabela streamings
+    const [rows] = await db.execute(
+      `SELECT 
+        codigo as id,
+        identificacao as nome,
+        codigo_servidor,
+        espaco,
+        espaco_usado,
+        data_cadastro,
+        status
+       FROM streamings 
+       WHERE codigo_cliente = ? AND status = 1`,
+      [userId]
+    );
+
+    // Se não houver pastas, criar uma pasta padrão
+    if (rows.length === 0) {
+      const userEmail = req.user.email ? req.user.email.split('@')[0] : `user_${userId}`;
+      res.json([{ id: 1, nome: userEmail }]);
+    } else {
+      res.json(rows);
+    }
+  } catch (err) {
+    console.error('Erro ao buscar pastas:', err);
+    res.status(500).json({ error: 'Erro ao buscar pastas', details: err.message });
+  }
+});
+
+// POST /api/folders - Cria nova pasta
+router.post('/', authMiddleware, async (req, res) => {
+  try {
+    const { nome } = req.body;
+    if (!nome) return res.status(400).json({ error: 'Nome da pasta é obrigatório' });
+    
+    const userId = req.user.id;
+    const userLogin = req.user.usuario || req.user.email?.split('@')[0] || `user_${userId}`;
+    
+    // Sanitizar nome da pasta automaticamente
+    const sanitizedName = VideoURLBuilder.sanitizeFolderName(nome);
+    
+    if (sanitizedName !== nome.toLowerCase()) {
+      console.log(`📝 Nome da pasta sanitizado: "${nome}" -> "${sanitizedName}"`);
+    }
+
+    // Buscar servidor do usuário ou melhor servidor disponível
+    const [userServerRows] = await db.execute(
+      'SELECT codigo_servidor FROM streamings WHERE codigo_cliente = ? LIMIT 1',
+      [userId]
+    );
+
+    let serverId = userServerRows.length > 0 ? userServerRows[0].codigo_servidor : null;
+    
+    // Se não tem servidor específico, buscar o melhor servidor disponível
+    if (!serverId) {
+      const [bestServerRows] = await db.execute(
+        `SELECT codigo FROM wowza_servers 
+         WHERE status = 'ativo' 
+         ORDER BY streamings_ativas ASC, load_cpu ASC 
+         LIMIT 1`
+      );
+      serverId = bestServerRows.length > 0 ? bestServerRows[0].codigo : 1;
+      
+      console.log(`📡 Usuário ${userId} sem servidor específico, usando melhor disponível: ${serverId}`);
+    } else {
+      console.log(`📡 Usuário ${userId} usando servidor específico: ${serverId}`);
+    }
+
+    // Verificar se pasta já existe
+    const [existingRows] = await db.execute(
+      'SELECT codigo FROM streamings WHERE identificacao = ? AND codigo_cliente = ?',
+      [sanitizedName, userId]
+    );
+
+    if (existingRows.length > 0) {
+      return res.status(400).json({ 
+        error: `Já existe uma pasta com este nome (${sanitizedName})`,
+        details: 'Escolha um nome diferente para a pasta'
+      });
+    }
+
+    // Criar entrada na tabela streamings para representar a pasta
+    const [result] = await db.execute(
+      `INSERT INTO streamings (
+        codigo_cliente, codigo_servidor, usuario, senha, senha_transmissao,
+        espectadores, bitrate, espaco, ftp_dir, identificacao, email,
+        data_cadastro, aplicacao, status
+      ) VALUES (?, ?, ?, '', '', 100, 2500, 1000, ?, ?, ?, NOW(), 'live', 1)`,
+      [userId, serverId, userLogin, `/home/streaming/${userLogin}/${sanitizedName}`, sanitizedName, req.user.email]
+    );
+
+    try {
+      // Garantir que estrutura completa do usuário existe
+      await SSHManager.createCompleteUserStructure(serverId, userLogin, {
+        bitrate: req.user.bitrate || 2500,
+        espectadores: req.user.espectadores || 100,
+        status_gravando: 'nao'
+      });
+      
+      // Criar a pasta específica no servidor via SSH no caminho correto
+      await SSHManager.createUserFolder(serverId, userLogin, sanitizedName);
+      
+      console.log(`✅ Pasta ${sanitizedName} criada no servidor para usuário ${userLogin}`);
+
+      // Atualizar arquivo SMIL do usuário após criar pasta
+      try {
+        const PlaylistSMILService = require('../services/PlaylistSMILService');
+        await PlaylistSMILService.updateUserSMIL(userId, userLogin, serverId);
+        console.log(`✅ Arquivo SMIL atualizado após criar pasta para usuário ${userLogin}`);
+      } catch (smilError) {
+        console.warn('Erro ao atualizar arquivo SMIL:', smilError.message);
+      }
+      
+    } catch (sshError) {
+      console.error('Erro ao criar pasta no servidor:', sshError);
+      // Remover entrada do banco se falhou no servidor
+      await db.execute('DELETE FROM streamings WHERE codigo = ?', [result.insertId]);
+      return res.status(500).json({ 
+        error: 'Erro ao criar pasta no servidor',
+        details: sshError.message 
+      });
+    }
+
+    res.status(201).json({
+      id: result.insertId,
+      nome: sanitizedName,
+      original_name: nome,
+      sanitized: sanitizedName !== nome.toLowerCase(),
+      espaco: 1000,
+      espaco_usado: 0,
+      servidor_id: serverId
+    });
+  } catch (err) {
+    console.error('Erro ao criar pasta:', err);
+    res.status(500).json({ error: 'Erro ao criar pasta', details: err.message });
+  }
+});
+
+// PUT /api/folders/:id - Edita pasta
+router.put('/:id', authMiddleware, async (req, res) => {
+  try {
+    const folderId = req.params.id;
+    const { nome } = req.body;
+    const userId = req.user.id;
+    const userLogin = req.user.usuario || req.user.email?.split('@')[0] || `user_${userId}`;
+
+    if (!nome) {
+      return res.status(400).json({ error: 'Nome da pasta é obrigatório' });
+    }
+    
+    // Sanitizar nome da pasta automaticamente
+    const sanitizedName = VideoURLBuilder.sanitizeFolderName(nome);
+    
+    if (sanitizedName !== nome.toLowerCase()) {
+      console.log(`📝 Nome da pasta sanitizado: "${nome}" -> "${sanitizedName}"`);
+    }
+
+    // Verificar se a pasta pertence ao usuário
+    const [folderRows] = await db.execute(
+      'SELECT codigo, identificacao, codigo_servidor FROM streamings WHERE codigo = ? AND codigo_cliente = ?',
+      [folderId, userId]
+    );
+
+    if (folderRows.length === 0) {
+      return res.status(404).json({ error: 'Pasta não encontrada' });
+    }
+
+    const folder = folderRows[0];
+    const serverId = folder.codigo_servidor || 1;
+    const oldFolderName = folder.identificacao;
+
+    // Verificar se novo nome já existe
+    const [existingRows] = await db.execute(
+      'SELECT codigo FROM streamings WHERE identificacao = ? AND codigo_cliente = ? AND codigo != ?',
+      [sanitizedName, userId, folderId]
+    );
+
+    if (existingRows.length > 0) {
+      return res.status(400).json({ 
+        error: `Já existe uma pasta com este nome (${sanitizedName})`,
+        details: 'Escolha um nome diferente para a pasta'
+      });
+    }
+
+    try {
+      // Renomear pasta no servidor via SSH
+      const oldPath = `/home/streaming/${userLogin}/${oldFolderName}`;
+      const newPath = `/home/streaming/${userLogin}/${nome}`;
+      
+      // Verificar se pasta antiga existe
+      const checkCommand = `test -d "${oldPath}" && echo "EXISTS" || echo "NOT_EXISTS"`;
+      const checkResult = await SSHManager.executeCommand(serverId, checkCommand);
+      
+      if (checkResult.stdout.includes('EXISTS')) {
+        // Renomear pasta
+        const newPath = `/home/streaming/${userLogin}/${sanitizedName}`;
+        await SSHManager.executeCommand(serverId, `mv "${oldPath}" "${newPath}"`);
+        
+        // Definir permissões corretas
+        await SSHManager.executeCommand(serverId, `chmod -R 755 "${newPath}"`);
+        await SSHManager.executeCommand(serverId, `chown -R streaming:streaming "${newPath}"`);
+        
+        console.log(`✅ Pasta renomeada no servidor: ${oldFolderName} -> ${nome}`);
+      } else {
+        // Se pasta não existe no servidor, criar nova
+        await SSHManager.createUserFolder(serverId, userLogin, sanitizedName);
+        console.log(`✅ Nova pasta criada no servidor: ${sanitizedName}`);
+      }
+      
+    } catch (sshError) {
+      console.error('Erro ao renomear pasta no servidor:', sshError);
+      return res.status(500).json({ 
+        error: 'Erro ao renomear pasta no servidor',
+        details: sshError.message 
+      });
+    }
+
+    // Atualizar nome no banco de dados
+    await db.execute(
+      'UPDATE streamings SET identificacao = ?, ftp_dir = ? WHERE codigo = ?',
+      [sanitizedName, `/home/streaming/${userLogin}/${sanitizedName}`, folderId]
+    );
+
+    // Atualizar caminhos dos vídeos no banco se necessário
+    await db.execute(
+      `UPDATE videos SET 
+       url = REPLACE(url, '${userLogin}/${oldFolderName}/', '${userLogin}/${sanitizedName}/'),
+       caminho = REPLACE(caminho, '/${oldFolderName}/', '/${sanitizedName}/')
+       WHERE pasta = ? AND codigo_cliente = ?`,
+      [folderId, userId]
+    );
+
+    console.log(`✅ Pasta ${oldFolderName} renomeada para ${sanitizedName} no banco de dados`);
+
+    res.json({ 
+      success: true, 
+      message: `Pasta renomeada com sucesso${sanitizedName !== nome.toLowerCase() ? ' (nome sanitizado)' : ''}`,
+      old_name: oldFolderName,
+      new_name: sanitizedName,
+      original_name: nome,
+      sanitized: sanitizedName !== nome.toLowerCase()
+    });
+  } catch (err) {
+    console.error('Erro ao editar pasta:', err);
+    res.status(500).json({ error: 'Erro ao editar pasta', details: err.message });
+  }
+});
+
+// DELETE /api/folders/:id - Remove pasta
+router.delete('/:id', authMiddleware, async (req, res) => {
+  try {
+    const folderId = req.params.id;
+    const userId = req.user.id;
+    const userLogin = req.user.usuario || req.user.email?.split('@')[0] || `user_${userId}`;
+
+    // Verificar se a pasta pertence ao usuário
+    const [folderRows] = await db.execute(
+      'SELECT codigo, identificacao, codigo_servidor FROM streamings WHERE codigo = ? AND codigo_cliente = ?',
+      [folderId, userId]
+    );
+
+    if (folderRows.length === 0) {
+      return res.status(404).json({ error: 'Pasta não encontrada' });
+    }
+
+    const folder = folderRows[0];
+    const serverId = folder.codigo_servidor || 1;
+    const folderName = folder.identificacao;
+
+    // Verificar se há vídeos na pasta
+    const [videoCountRows] = await db.execute(
+      'SELECT COUNT(*) as count FROM videos WHERE pasta = ? AND codigo_cliente = ?',
+      [folderId, userId]
+    );
+
+    if (videoCountRows[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Não é possível excluir pasta que contém vídeos',
+        details: `A pasta contém ${videoCountRows[0].count} vídeo(s). Remova todos os vídeos antes de excluir a pasta.`
+      });
+    }
+
+    // Verificar se pasta está sendo usada em playlists
+    const [playlistRows] = await db.execute(
+      'SELECT COUNT(*) as count FROM playlists_videos WHERE path_video LIKE ?',
+      [`%/${userLogin}/${folderName}/%`]
+    );
+
+    if (playlistRows[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Não é possível excluir pasta que está sendo usada em playlists',
+        details: `A pasta está sendo usada em ${playlistRows[0].count} item(s) de playlist. Remova-os primeiro.`
+      });
+    }
+
+    try {
+      // Remover pasta do servidor via SSH
+      const remoteFolderPath = `/home/streaming/${userLogin}/${folderName}`;
+      
+      // Verificar se pasta existe no servidor
+      const checkCommand = `test -d "${remoteFolderPath}" && echo "EXISTS" || echo "NOT_EXISTS"`;
+      const checkResult = await SSHManager.executeCommand(serverId, checkCommand);
+      
+      if (checkResult.stdout.includes('EXISTS')) {
+        // Verificar se pasta está realmente vazia no servidor
+        const listCommand = `find "${remoteFolderPath}" -type f | wc -l`;
+        const listResult = await SSHManager.executeCommand(serverId, listCommand);
+        const fileCount = parseInt(listResult.stdout.trim()) || 0;
+        
+        if (fileCount > 0) {
+          return res.status(400).json({ 
+            error: 'Pasta contém arquivos no servidor',
+            details: `Encontrados ${fileCount} arquivo(s) no servidor. Remova-os primeiro.`
+          });
+        }
+        
+        // Remover pasta vazia
+        await SSHManager.executeCommand(serverId, `rmdir "${remoteFolderPath}"`);
+        console.log(`✅ Pasta ${folderName} removida do servidor`);
+      } else {
+        console.log(`⚠️ Pasta ${folderName} não existe no servidor, removendo apenas do banco`);
+      }
+    } catch (sshError) {
+      console.error('Erro ao remover pasta do servidor:', sshError.message);
+      return res.status(500).json({ 
+        error: 'Erro ao remover pasta do servidor',
+        details: sshError.message 
+      });
+    }
+
+    // Remover pasta
+    await db.execute(
+      'DELETE FROM streamings WHERE codigo = ? AND codigo_cliente = ?',
+      [folderId, userId]
+    );
+
+    console.log(`✅ Pasta ${folderName} removida do banco de dados`);
+
+    res.json({ success: true, message: 'Pasta removida com sucesso' });
+  } catch (err) {
+    console.error('Erro ao remover pasta:', err);
+    res.status(500).json({ error: 'Erro ao remover pasta', details: err.message });
+  }
+});
+
+// GET /api/folders/:id/info - Informações detalhadas da pasta
+router.get('/:id/info', authMiddleware, async (req, res) => {
+  try {
+    const folderId = req.params.id;
+    const userId = req.user.id;
+    const userLogin = req.user.email ? req.user.email.split('@')[0] : `user_${userId}`;
+
+    // Buscar dados da pasta
+    const [folderRows] = await db.execute(
+      `SELECT 
+        codigo as id,
+        identificacao as nome,
+        codigo_servidor,
+        espaco,
+        espaco_usado,
+        data_cadastro,
+        ftp_dir
+       FROM streamings 
+       WHERE codigo = ? AND codigo_cliente = ?`,
+      [folderId, userId]
+    );
+
+    if (folderRows.length === 0) {
+      return res.status(404).json({ error: 'Pasta não encontrada' });
+    }
+
+    const folder = folderRows[0];
+    const serverId = folder.codigo_servidor || 1;
+    const folderName = folder.nome;
+
+    // Recalcular espaço usado baseado nos vídeos reais
+    const [videoSizeRows] = await db.execute(
+      `SELECT COALESCE(SUM(CEIL(tamanho_arquivo / (1024 * 1024))), 0) as real_used_mb
+       FROM videos 
+       WHERE pasta = ? AND codigo_cliente = ?`,
+      [folderId, userId]
+    );
+    
+    const realUsedMB = videoSizeRows[0]?.real_used_mb || 0;
+    // Verificar se pasta existe no servidor
+    let serverInfo = null;
+    try {
+      const remoteFolderPath = `/home/streaming/${userLogin}/${folderName}`;
+      const checkCommand = `test -d "${remoteFolderPath}" && ls -la "${remoteFolderPath}" | head -1 || echo "NOT_EXISTS"`;
+      const checkResult = await SSHManager.executeCommand(serverId, checkCommand);
+      
+      if (!checkResult.stdout.includes('NOT_EXISTS')) {
+        // Contar arquivos na pasta
+        const countCommand = `find "${remoteFolderPath}" -type f | wc -l`;
+        const countResult = await SSHManager.executeCommand(serverId, countCommand);
+        const fileCount = parseInt(countResult.stdout.trim()) || 0;
+        
+        // Calcular tamanho da pasta
+        const sizeCommand = `du -sb "${remoteFolderPath}" 2>/dev/null | cut -f1 || echo "0"`;
+        const sizeResult = await SSHManager.executeCommand(serverId, sizeCommand);
+        const folderSize = parseInt(sizeResult.stdout.trim()) || 0;
+        
+        serverInfo = {
+          exists: true,
+          file_count: fileCount,
+          size_bytes: folderSize,
+          size_mb: Math.ceil(folderSize / (1024 * 1024)),
+          path: remoteFolderPath
+        };
+        
+        // Atualizar espaço usado se há diferença significativa
+        const serverSizeMB = Math.ceil(folderSize / (1024 * 1024));
+        if (Math.abs(serverSizeMB - (folder.espaco_usado || 0)) > 5) {
+          await db.execute(
+            'UPDATE streamings SET espaco_usado = ? WHERE codigo = ?',
+            [Math.max(serverSizeMB, realUsedMB), folderId]
+          );
+          folder.espaco_usado = Math.max(serverSizeMB, realUsedMB);
+          console.log(`📊 Espaço da pasta ${folderName} atualizado: ${folder.espaco_usado}MB`);
+        }
+      } else {
+        serverInfo = {
+          exists: false,
+          file_count: 0,
+          size_bytes: 0,
+          size_mb: 0,
+          path: remoteFolderPath
+        };
+      }
+    } catch (sshError) {
+      console.warn('Erro ao verificar pasta no servidor:', sshError.message);
+      serverInfo = {
+        exists: false,
+        error: sshError.message
+      };
+    }
+
+    // Contar vídeos no banco
+    const [videoCountRows] = await db.execute(
+      'SELECT COUNT(*) as count FROM videos WHERE pasta = ? AND codigo_cliente = ?',
+      [folderId, userId]
+    );
+
+    res.json({
+      ...folder,
+      video_count_db: videoCountRows[0].count,
+      server_info: serverInfo,
+      real_used_mb: realUsedMB,
+      percentage_used: folder.espaco > 0 ? Math.round((folder.espaco_usado / folder.espaco) * 100) : 0
+    });
+  } catch (err) {
+    console.error('Erro ao buscar informações da pasta:', err);
+    res.status(500).json({ error: 'Erro ao buscar informações da pasta', details: err.message });
+  }
+});
+
+// POST /api/folders/:id/sync - Sincronizar pasta com servidor
+router.post('/:id/sync', authMiddleware, async (req, res) => {
+  try {
+    const folderId = req.params.id;
+    const userId = req.user.id;
+    const userLogin = req.user.usuario || req.user.email?.split('@')[0] || `user_${userId}`;
+
+    // Buscar dados da pasta
+    const [folderRows] = await db.execute(
+      'SELECT identificacao, codigo_servidor FROM streamings WHERE codigo = ? AND codigo_cliente = ?',
+      [folderId, userId]
+    );
+
+    if (folderRows.length === 0) {
+      return res.status(404).json({ error: 'Pasta não encontrada' });
+    }
+
+    const folder = folderRows[0];
+    const serverId = folder.codigo_servidor || 1;
+    const folderName = folder.identificacao;
+
+    try {
+      // Garantir que estrutura completa do usuário existe
+      await SSHManager.createCompleteUserStructure(serverId, userLogin, {
+        bitrate: req.user.bitrate || 2500,
+        espectadores: req.user.espectadores || 100,
+        status_gravando: 'nao'
+      });
+      
+      // Garantir que pasta específica existe
+      await SSHManager.createUserFolder(serverId, userLogin, folderName);
+      
+      // Limpar arquivos temporários e corrompidos
+      const cleanupCommand = `find "/home/streaming/${userLogin}/${folderName}" -type f \\( -name "*.tmp" -o -name "*.part" -o -size 0 \\) -delete 2>/dev/null || true`;
+      await SSHManager.executeCommand(serverId, cleanupCommand);
+      
+      // Definir permissões corretas
+      const folderPath = `/home/streaming/${userLogin}/${folderName}`;
+      await SSHManager.executeCommand(serverId, `chmod -R 755 "${folderPath}"`);
+      await SSHManager.executeCommand(serverId, `chown -R streaming:streaming "${folderPath}"`);
+      
+      console.log(`✅ Pasta ${folderName} sincronizada com servidor`);
+      
+      res.json({
+        success: true,
+        message: 'Pasta sincronizada com sucesso',
+        folder_name: folderName,
+        server_path: folderPath
+      });
+    } catch (sshError) {
+      console.error('Erro na sincronização:', sshError);
+      res.status(500).json({ 
+        error: 'Erro ao sincronizar pasta com servidor',
+        details: sshError.message 
+      });
+    }
+  } catch (err) {
+    console.error('Erro na sincronização da pasta:', err);
+    res.status(500).json({ error: 'Erro na sincronização da pasta', details: err.message });
+  }
+});
+
+module.exports = router;
