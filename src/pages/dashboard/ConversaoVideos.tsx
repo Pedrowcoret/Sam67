@@ -917,19 +917,21 @@ const ConversaoVideos: React.FC = () => {
                   {!conversionSettings.use_custom ? (
                     <>
                       <p>• Qualidade: {getQualityLabel(conversionSettings.quality || 'media')}</p>
-                      <p>• Bitrate: {qualityPresets.find(p => p.quality === conversionSettings.quality)?.bitrate || 'N/A'} kbps</p>
+                <h3 className="text-blue-900 font-medium mb-2">🎯 Sistema de Compatibilidade e Conversão</h3>
                       <p>• Resolução: {qualityPresets.find(p => p.quality === conversionSettings.quality)?.resolution || 'N/A'}</p>
-                    </>
+                  <li>• <strong>Análise rigorosa:</strong> Apenas MP4 + H264/H265 + bitrate correto = Otimizado</li>
+                  <li>• <strong>Status vermelho:</strong> Vídeo NÃO PODE ser usado até conversão</li>
+                  <li>• <strong>Status verde:</strong> Vídeo já otimizado e pronto para uso</li>
                   ) : (
-                    <>
-                      <p>• Bitrate: {conversionSettings.custom_bitrate || 'N/A'} kbps</p>
+                  <li>• <strong>Bloqueio automático:</strong> Vídeos incompatíveis ficam inutilizáveis</li>
+                  <li>• <strong>Formatos aceitos:</strong> Apenas MP4 com codec H264 ou H265</li>
+                  <li>• <strong>Limite de bitrate:</strong> Respeitado rigorosamente conforme plano</li>
                       <p>• Resolução: {conversionSettings.custom_resolution || 'N/A'}</p>
                       <p>• Tamanho estimado: ~{conversionSettings.custom_bitrate ? Math.round((conversionSettings.custom_bitrate * (selectedVideo?.duracao || 300)) / 8000) : 'N/A'} MB</p>
                     </>
-                  )}
-                  <p>• Tempo estimado: 5-15 minutos (dependendo do tamanho)</p>
+                  <li>• <strong>Conversão obrigatória:</strong> Vídeos fora do padrão devem ser convertidos</li>
                   <p>• Codec de vídeo: H.264 (compatibilidade máxima)</p>
-                  <p>• Codec de áudio: AAC 128 kbps</p>
+                  <li>• <strong>Salvamento no Wowza:</strong> Vídeos salvos em /usr/local/WowzaStreamingEngine/content/</li>
                 </div>
               </div>
             </div>

@@ -156,6 +156,7 @@ router.get('/', authMiddleware, async (req, res) => {
     const userId = req.user.id;
     const userLogin = req.user.email ? req.user.email.split('@')[0] : `user_${userId}`;
     const folderId = req.query.folder_id;
+    
     if (!folderId) {
       return res.status(400).json({ error: 'folder_id é obrigatório' });
     }
@@ -165,6 +166,7 @@ router.get('/', authMiddleware, async (req, res) => {
       'SELECT identificacao, codigo_servidor, espaco_usado FROM streamings WHERE codigo = ? AND codigo_cliente = ?',
       [folderId, userId]
     );
+    
     if (folderRows.length === 0) {
       return res.status(404).json({ error: 'Pasta não encontrada' });
     }
@@ -172,7 +174,10 @@ router.get('/', authMiddleware, async (req, res) => {
     const folderData = folderRows[0];
     const folderName = folderRows[0].identificacao;
     const serverId = folderData.codigo_servidor || 1;
-    // Buscar vídeos na tabela videos usando pasta
+    
+    console.log(`📁 Carregando vídeos da pasta: ${folderName} (ID: ${folderId})`);
+    
+    // Buscar vídeos na tabela videos
     const [rows] = await db.execute(
       `SELECT 
         id,
@@ -195,7 +200,6 @@ router.get('/', authMiddleware, async (req, res) => {
     );
 
     console.log(`📁 Buscando vídeos na pasta: ${folderName} (ID: ${folderId})`);
-    console.log(`📊 Encontrados ${rows.length} vídeos no banco`);
 
 
     const videos = rows.map(video => {

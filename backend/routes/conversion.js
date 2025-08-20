@@ -168,9 +168,10 @@ router.get('/videos', authMiddleware, async (req, res) => {
           bitrate: 0,
           resolution: 'Personalizada',
           canConvert: true,
-      } else {
+              } else {
         compatibilityStatus = 'needs_conversion';
         compatibilityMessage = 'Necessário Conversão';
+      }
       ];
 
       return {
@@ -312,9 +313,16 @@ router.post('/convert', authMiddleware, async (req, res) => {
 
     // Construir caminho correto no servidor
     let inputPath = video.caminho;
-    if (!inputPath.startsWith('/home/streaming/')) {
-      // Converter para nova estrutura
-      inputPath = `/home/streaming/${userLogin}/${video.folder_name}/${video.nome}`;
+    
+    // Garantir que estamos usando o caminho correto do Wowza
+    if (!inputPath.startsWith('/usr/local/WowzaStreamingEngine/content/')) {
+      if (inputPath.startsWith('/home/streaming/')) {
+        // Converter de streaming para Wowza
+        inputPath = inputPath.replace('/home/streaming/', '/usr/local/WowzaStreamingEngine/content/');
+      } else {
+        // Construir caminho do Wowza
+        inputPath = `/usr/local/WowzaStreamingEngine/content/${userLogin}/${video.folder_name}/${video.nome}`;
+      }
     }
     
     // Verificar se arquivo existe no servidor
@@ -379,7 +387,7 @@ router.post('/convert', authMiddleware, async (req, res) => {
 
     // Construir caminho de saída
     const outputFileName = video.nome.replace(/\.[^/.]+$/, `_${targetBitrate}kbps.mp4`);
-    const outputPath = `/home/streaming/${userLogin}/${video.folder_name}/${outputFileName}`;
+    const outputPath = `/usr/local/WowzaStreamingEngine/content/${userLogin}/${video.folder_name}/${outputFileName}`;
 
 
     // Verificar se conversão já existe

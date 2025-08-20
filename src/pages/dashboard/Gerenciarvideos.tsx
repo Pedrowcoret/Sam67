@@ -1050,16 +1050,17 @@ const GerenciarVideos: React.FC = () => {
           <div>
             <h3 className="text-green-900 font-medium mb-2">🎯 Sistema de Visualização Otimizado</h3>
             <ul className="text-green-800 text-sm space-y-1">
-              <li>• <strong>URLs padronizadas:</strong> Formato https://dominio:1443/play.php?login=usuario&video=pasta/arquivo.mp4</li>
+              <li>• <strong>Salvamento no Wowza:</strong> Vídeos salvos em /usr/local/WowzaStreamingEngine/content/</li>
+              <li>• <strong>Compatibilidade rigorosa:</strong> Apenas MP4 + H264/H265 + bitrate correto = Verde</li>
+              <li>• <strong>Status vermelho:</strong> Vídeo NÃO PODE ser usado até conversão</li>
               <li>• <strong>Análise automática:</strong> Bitrate, codec e resolução detectados automaticamente</li>
-              <li>• <strong>Otimização recomendada:</strong> Mesmo vídeos compatíveis podem ser otimizados</li>
+              <li>• <strong>Bloqueio de incompatíveis:</strong> Sistema impede uso de vídeos fora do padrão</li>
               <li>• <strong>Sanitização automática:</strong> Nomes de pastas convertidos para minúsculas sem acentos</li>
-              <li>• <strong>Domínio dinâmico:</strong> URLs baseadas no servidor configurado no banco de dados</li>
               <li>• <strong>Gerenciamento de pastas:</strong> Criação, edição e exclusão sincronizada com servidor</li>
-              <li>• <strong>Sincronização automática:</strong> Pastas e vídeos sempre em sincronia</li>
+              <li>• <strong>Estrutura dupla:</strong> Backup em /home/streaming/ e principal em Wowza</li>
               <li>• <strong>Monitoramento de espaço:</strong> Controle em tempo real do uso de armazenamento</li>
-              <li>• <strong>Conversão inteligente:</strong> Sistema detecta e recomenda otimizações necessárias</li>
-              <li>• <strong>Porta padrão:</strong> 1443 para todas as visualizações</li>
+              <li>• <strong>Conversão obrigatória:</strong> Vídeos incompatíveis devem ser convertidos</li>
+              <li>• <strong>Performance otimizada:</strong> Atualizações mais rápidas e eficientes</li>
             </ul>
           </div>
         </div>
